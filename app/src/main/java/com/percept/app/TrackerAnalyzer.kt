@@ -3,6 +3,9 @@ package com.percept.app
 import android.graphics.RectF
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.objects.ObjectDetection
+import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
@@ -82,6 +85,30 @@ class TrackerAnalyzer(
     private val eig = Mat()
     private val maskMat = Mat()
 
+    /**
+     * ML Kit object detection, in STREAM_MODE so it assigns a tracking ID that survives
+     * across frames — which is what makes a box mean "this object" rather than "pixels
+     * differed here". Classification adds a coarse label.
+     *
+     * Runs at its own pace: one frame at a time, skipping while busy. It is slower than
+     * the CV pipeline, and blocking on it would drag the whole overlay down to its rate.
+     * Boxes therefore persist between detections, which is correct — an object does not
+     * cease to exist because the detector has not caught up.
+     */
+    private val detector = if (config.useMlkit == 1) {
+        ObjectDetection.getClient(
+            ObjectDetectorOptions.Builder()
+                .setDetectorMode(ObjectDetectorOptions.STREAM_MODE)
+                .enableMultipleObjects()
+                .enableClassification()
+                .build()
+        )
+    } else null
+
+    @Volatile private var mlBusy = false
+    @Volatile private var mlBoxes: List<DetectedBox> = emptyList()
+    @Volatile private var mlFrames = 0
+
     private val subtractor = Video.createBackgroundSubtractorMOG2(200, 32.0, false)
     private val openKernel =
         Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(5.0, 5.0))
@@ -107,10 +134,14 @@ class TrackerAnalyzer(
         useA = !useA
 
         val t0 = System.nanoTime()
+        var handedOff = false
         try {
-            yPlaneToGray(image, rotation, gray)
+            yPlaneToGray(image, rotation, gray) // copies out of the buffer
+            handedOff = submitToDetector(image, rotation, outW, outH)
         } finally {
-            image.close()
+            // The detector holds the ImageProxy until its task finishes and closes it
+            // there; closing early would pull the pixels out from under it.
+            if (!handedOff) image.close()
         }
         val t1 = System.nanoTime()
 
@@ -129,7 +160,12 @@ class TrackerAnalyzer(
         }
         val t4 = System.nanoTime()
 
-        val boxes = motionBoxes()
+        // ML Kit boxes when it has produced any: a labelled, tracked object beats a
+        // motion blob, which cannot tell a person from a wardrobe panel that shifted.
+        // Motion blobs remain the fallback so the overlay still works before the first
+        // detection lands, and for objects the model has no concept of.
+        val detected = mlBoxes
+        val boxes = if (detected.isNotEmpty()) detected else motionBoxes()
         val boxEdges = linkBoxes(boxes)
         val t5 = System.nanoTime()
 
@@ -156,6 +192,7 @@ class TrackerAnalyzer(
                 "Percept",
                 "f=$frameNo pts=${points.size} edges=${edges.size / 2} " +
                     "objects=${boxes.size} objLinks=${boxEdges.size / 2} " +
+                    "src=${if (detected.isNotEmpty()) "mlkit" else "motion"} mlFrames=$mlFrames " +
                     "fg=${"%.3f".format(fgRatio)} usable=$fgUsable eig=${"%.4f".format(eigMax)} " +
                     "seedFg=$seededFg seedAll=$seededAll | " +
                     "convert=${"%.1f".format(timings.convert)}ms flow=${"%.1f".format(timings.flow)}ms " +
@@ -202,6 +239,45 @@ class TrackerAnalyzer(
         roi.release() // header only; the pixel data belongs to matFull
 
         Imgproc.resize(matRot, dst, Size(ANALYSIS_W.toDouble(), ANALYSIS_H.toDouble()))
+    }
+
+    /**
+     * Hands the frame to ML Kit if the detector is idle, and returns whether ownership of
+     * the ImageProxy moved with it. Frames arriving while a detection is in flight are
+     * skipped rather than queued: the analysis stream is KEEP_ONLY_LATEST, so a backlog
+     * would only ever deliver stale boxes.
+     *
+     * Results land in analysis-frame coordinates, matching the tracked points, so
+     * everything downstream (linking, merging, scaling) is unchanged.
+     */
+    private fun submitToDetector(image: ImageProxy, rotation: Int, outW: Int, outH: Int): Boolean {
+        val det = detector ?: return false
+        if (mlBusy) return false
+        val media = image.image ?: return false
+
+        mlBusy = true
+        val sx = ANALYSIS_W.toFloat() / outW
+        val sy = ANALYSIS_H.toFloat() / outH
+
+        det.process(InputImage.fromMediaImage(media, rotation))
+            .addOnSuccessListener { objects ->
+                mlBoxes = objects.map { o ->
+                    val b = o.boundingBox
+                    DetectedBox(
+                        RectF(b.left * sx, b.top * sy, b.right * sx, b.bottom * sy),
+                        o.labels.maxByOrNull { it.confidence }
+                            ?.takeIf { it.confidence >= config.mlConfidence }?.text,
+                        o.trackingId
+                    )
+                }
+                mlFrames++
+            }
+            .addOnFailureListener { android.util.Log.w("Percept", "detector: ${it.message}") }
+            .addOnCompleteListener {
+                image.close()
+                mlBusy = false
+            }
+        return true
     }
 
     /**
@@ -364,7 +440,7 @@ class TrackerAnalyzer(
      * Boxes come from the real foreground blobs, not from clusters of tracked points.
      * Hold still and the boxes go away, because nothing is moving.
      */
-    private fun motionBoxes(): List<RectF> {
+    private fun motionBoxes(): List<DetectedBox> {
         fgMat.copyTo(contourWork) // findContours mutates its input
         val contours = ArrayList<MatOfPoint>()
         Imgproc.findContours(
@@ -372,14 +448,16 @@ class TrackerAnalyzer(
             Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
         )
 
-        val boxes = ArrayList<RectF>()
+        val boxes = ArrayList<DetectedBox>()
         for (c in contours) {
             if (Imgproc.contourArea(c) >= config.minBoxArea) {
                 val r = Imgproc.boundingRect(c)
                 boxes.add(
-                    RectF(
-                        r.x.toFloat(), r.y.toFloat(),
-                        (r.x + r.width).toFloat(), (r.y + r.height).toFloat()
+                    DetectedBox(
+                        RectF(
+                            r.x.toFloat(), r.y.toFloat(),
+                            (r.x + r.width).toFloat(), (r.y + r.height).toFloat()
+                        )
                     )
                 )
             }
@@ -394,12 +472,12 @@ class TrackerAnalyzer(
      * them — the relationship the whole look is built on, and one that point-level edges
      * can never produce, since those only ever connect texture within a single object.
      */
-    private fun linkBoxes(boxes: List<RectF>): IntArray {
+    private fun linkBoxes(boxes: List<DetectedBox>): IntArray {
         val n = boxes.size
         if (n < 2) return IntArray(0)
 
-        val cx = FloatArray(n) { boxes[it].centerX() }
-        val cy = FloatArray(n) { boxes[it].centerY() }
+        val cx = FloatArray(n) { boxes[it].rect.centerX() }
+        val cy = FloatArray(n) { boxes[it].rect.centerY() }
         val out = ArrayList<Int>()
         val seen = HashSet<Long>()
         val k = minOf(config.objLinks, n - 1)
@@ -434,7 +512,7 @@ class TrackerAnalyzer(
      * one object. Repeats until stable, since merging two boxes can bring a third within
      * range.
      */
-    private fun mergeBoxes(input: List<RectF>): List<RectF> {
+    private fun mergeBoxes(input: List<DetectedBox>): List<DetectedBox> {
         val boxes = ArrayList(input)
         val m = config.boxMerge.toFloat()
         var merged = true
@@ -442,14 +520,16 @@ class TrackerAnalyzer(
             merged = false
             outer@ for (i in boxes.indices) {
                 for (j in i + 1 until boxes.size) {
-                    val a = boxes[i]
-                    val b = boxes[j]
+                    val a = boxes[i].rect
+                    val b = boxes[j].rect
                     val near = a.left - m < b.right && b.left - m < a.right &&
                         a.top - m < b.bottom && b.top - m < a.bottom
                     if (!near) continue
-                    boxes[i] = RectF(
-                        minOf(a.left, b.left), minOf(a.top, b.top),
-                        maxOf(a.right, b.right), maxOf(a.bottom, b.bottom)
+                    boxes[i] = boxes[i].copy(
+                        rect = RectF(
+                            minOf(a.left, b.left), minOf(a.top, b.top),
+                            maxOf(a.right, b.right), maxOf(a.bottom, b.bottom)
+                        )
                     )
                     boxes.removeAt(j)
                     merged = true
@@ -538,7 +618,7 @@ class TrackerAnalyzer(
      * so the line spans the actual gap between them rather than starting somewhere
      * arbitrary inside each blob.
      */
-    private fun linkAcrossObjects(boxes: List<RectF>, boxEdges: IntArray): IntArray {
+    private fun linkAcrossObjects(boxes: List<DetectedBox>, boxEdges: IntArray): IntArray {
         if (boxes.size < 2 || boxEdges.isEmpty() || points.isEmpty()) return IntArray(0)
 
         val members = Array(boxes.size) { ArrayList<Int>() }
@@ -546,7 +626,7 @@ class TrackerAnalyzer(
             val px = points[i].x.toFloat()
             val py = points[i].y.toFloat()
             for (b in boxes.indices) {
-                if (boxes[b].contains(px, py)) { members[b].add(i); break }
+                if (boxes[b].rect.contains(px, py)) { members[b].add(i); break }
             }
         }
 
@@ -558,8 +638,8 @@ class TrackerAnalyzer(
             val ma = members[a]
             val mb = members[b]
             if (ma.isNotEmpty() && mb.isNotEmpty()) {
-                val bc = boxes[b]
-                val ac = boxes[a]
+                val bc = boxes[b].rect
+                val ac = boxes[a].rect
                 val pa = ma.minByOrNull { hypot(points[it].x - bc.centerX(), points[it].y - bc.centerY()) }!!
                 val pb = mb.minByOrNull { hypot(points[it].x - ac.centerX(), points[it].y - ac.centerY()) }!!
                 val d = hypot(points[pa].x - points[pb].x, points[pa].y - points[pb].y)
@@ -573,7 +653,7 @@ class TrackerAnalyzer(
     /** Scale everything from the analysis frame up to the rotated camera frame. */
     private fun buildFrame(
         edges: IntArray,
-        boxes: List<RectF>,
+        boxes: List<DetectedBox>,
         boxEdges: IntArray,
         outW: Int,
         outH: Int,
@@ -591,7 +671,12 @@ class TrackerAnalyzer(
             )
         }
         val scaledBoxes = boxes.map {
-            RectF(it.left * sx, it.top * sy, it.right * sx, it.bottom * sy)
+            it.copy(
+                rect = RectF(
+                    it.rect.left * sx, it.rect.top * sy,
+                    it.rect.right * sx, it.rect.bottom * sy
+                )
+            )
         }
         return TrackedFrame(tracked, edges, scaledBoxes, boxEdges, eigMax, fgRatio, timings)
     }

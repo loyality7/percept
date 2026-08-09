@@ -54,6 +54,10 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
         style = Paint.Style.STROKE
         strokeWidth = 2f
     }
+    private val boxLabelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(240, 255, 80, 80)
+        textSize = 26f
+    }
     private val idPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(200, 0, 255, 255)
         textSize = 18f
@@ -214,9 +218,15 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
 
         if (mode == MODE_ALL || mode == MODE_BOXES) {
             for (box in f.boxes) {
-                canvas.drawRect(
-                    box.left * sx, box.top * sy, box.right * sx, box.bottom * sy, boxPaint
-                )
+                val r = box.rect
+                canvas.drawRect(r.left * sx, r.top * sy, r.right * sx, r.bottom * sy, boxPaint)
+                // Label and tracking ID come from the ML detector; motion blobs have
+                // neither, so nothing is drawn rather than a made-up name.
+                val tag = listOfNotNull(box.label, box.trackingId?.let { "#$it" })
+                    .joinToString(" ")
+                if (tag.isNotEmpty()) {
+                    canvas.drawText(tag, r.left * sx + 4f, r.top * sy - 6f, boxLabelPaint)
+                }
             }
         }
 

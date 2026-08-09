@@ -44,4 +44,9 @@ dependencies {
 
     // Shi-Tomasi corner detection + Lucas-Kanade optical flow live here (org.opencv.video / imgproc)
     implementation("org.opencv:opencv:4.10.0")
+
+    // On-device object detection. The bundled variant ships the model inside the APK, so
+    // detection works offline and on first launch — the Play-Services variant would have
+    // to download it, and would silently detect nothing until that finished.
+    implementation("com.google.mlkit:object-detection:17.0.2")
 }

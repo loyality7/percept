@@ -45,6 +45,18 @@ data class TrackerConfig(
     val boxMerge: Double = 24.0,
     /** How many nearest objects each detected object links to. */
     val objLinks: Int = 2,
+
+    /**
+     * 1 = use ML Kit's on-device object detector for boxes, 0 = motion blobs only.
+     *
+     * A motion blob only means "these pixels changed", which is why a wardrobe panel can
+     * become an object when the phone drifts. ML Kit returns actual objects with a
+     * tracking ID that survives across frames, so a box means "this thing" rather than
+     * "something moved here". Motion blobs stay as the fallback.
+     */
+    val useMlkit: Int = 1,
+    /** Minimum classification confidence before a label is shown. */
+    val mlConfidence: Double = 0.5,
     /** MORPH_CLOSE kernel, px. Fills the holes MOG2 leaves inside a solid subject. */
     val closeKernel: Int = 21,
     /** px/frame a point must move before its ID is drawn. */
@@ -102,6 +114,8 @@ data class TrackerConfig(
                 minBoxArea = intent.getFloatExtra("min_box_area", d.minBoxArea.toFloat()).toDouble(),
                 boxMerge = intent.getFloatExtra("box_merge", d.boxMerge.toFloat()).toDouble(),
                 objLinks = intent.getIntExtra("obj_links", d.objLinks),
+                useMlkit = intent.getIntExtra("use_mlkit", d.useMlkit),
+                mlConfidence = intent.getFloatExtra("ml_confidence", d.mlConfidence.toFloat()).toDouble(),
                 closeKernel = intent.getIntExtra("close_kernel", d.closeKernel),
                 labelSpeed = intent.getFloatExtra("label_speed", d.labelSpeed.toFloat()).toDouble(),
                 smoothing = intent.getFloatExtra("smoothing", d.smoothing.toFloat()).toDouble(),

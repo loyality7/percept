@@ -9,6 +9,17 @@ data class TrackedPoint(
     val speed: Float
 )
 
+/**
+ * One detected object. `label` and `trackingId` are only populated by the ML Kit
+ * detector — the motion-blob fallback knows that something moved, but not what it is or
+ * whether it is the same thing as last frame.
+ */
+data class DetectedBox(
+    val rect: android.graphics.RectF,
+    val label: String? = null,
+    val trackingId: Int? = null
+)
+
 /** Per-stage wall time for the last analysed frame, in ms. */
 data class Timings(
     val convert: Float = 0f,
@@ -28,7 +39,7 @@ data class TrackedFrame(
      * lines from wherever the points are being drawn right now.
      */
     val edges: IntArray,
-    val boxes: List<android.graphics.RectF>,
+    val boxes: List<DetectedBox>,
     /**
      * Links between detected objects, as index pairs into `boxes`. This is the headline
      * relationship in the reference look: two people walking, a line drawn between them.
