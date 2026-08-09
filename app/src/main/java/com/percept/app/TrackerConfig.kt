@@ -24,13 +24,37 @@ data class TrackerConfig(
     val minDistance: Double = 9.0,
     /** Forward-backward flow error, px. Too tight and fast-moving points get killed. */
     val fbThreshold: Double = 3.0,
-    /** Longest web line, analysis-frame px. */
+    /** Longest *local* web line, analysis-frame px. Builds the tight cluster structure. */
     val maxEdge: Double = 42.0,
-    /** Max web lines per point — this is what keeps the mesh sparse instead of a blanket. */
+    /** Max local web lines per point — keeps the mesh sparse instead of a blanket. */
     val maxLinks: Int = 3,
+
+    /**
+     * Long connectors: how many, and how short one is allowed to be.
+     *
+     * Length is not what makes a long line meaningful — position is. These are only ever
+     * drawn between two *different* detected objects, so a long line always means "these
+     * two things are related". Choosing long pairs by distance alone gives spans that
+     * cross the frame for no reason.
+     */
+    val longLinks: Int = 12,
+    val longMin: Double = 40.0,
+
     val minBoxArea: Double = 250.0,
+    /** Boxes closer than this (analysis px) merge into one — one object, one box. */
+    val boxMerge: Double = 24.0,
+    /** How many nearest objects each detected object links to. */
+    val objLinks: Int = 2,
+    /** MORPH_CLOSE kernel, px. Fills the holes MOG2 leaves inside a solid subject. */
+    val closeKernel: Int = 21,
     /** px/frame a point must move before its ID is drawn. */
     val labelSpeed: Double = 1.0,
+    /**
+     * How hard the overlay eases toward each new measurement, 0..1 per display frame.
+     * CV runs slower than the display, so points are interpolated between readings —
+     * 1.0 disables that and steps straight to each measurement (visibly jumpy).
+     */
+    val smoothing: Double = 0.35,
 
     /**
      * Fraction of each re-detect reserved for the moving subject, 0.0..1.0.
@@ -64,8 +88,14 @@ data class TrackerConfig(
                 fbThreshold = intent.getFloatExtra("fb_threshold", d.fbThreshold.toFloat()).toDouble(),
                 maxEdge = intent.getFloatExtra("max_edge", d.maxEdge.toFloat()).toDouble(),
                 maxLinks = intent.getIntExtra("max_links", d.maxLinks),
+                longLinks = intent.getIntExtra("long_links", d.longLinks),
+                longMin = intent.getFloatExtra("long_min", d.longMin.toFloat()).toDouble(),
                 minBoxArea = intent.getFloatExtra("min_box_area", d.minBoxArea.toFloat()).toDouble(),
+                boxMerge = intent.getFloatExtra("box_merge", d.boxMerge.toFloat()).toDouble(),
+                objLinks = intent.getIntExtra("obj_links", d.objLinks),
+                closeKernel = intent.getIntExtra("close_kernel", d.closeKernel),
                 labelSpeed = intent.getFloatExtra("label_speed", d.labelSpeed.toFloat()).toDouble(),
+                smoothing = intent.getFloatExtra("smoothing", d.smoothing.toFloat()).toDouble(),
                 fgBias = intent.getFloatExtra("fg_bias", d.fgBias.toFloat()).toDouble(),
                 learningRate = intent.getFloatExtra("learning_rate", d.learningRate.toFloat()).toDouble(),
                 pruneBg = intent.getIntExtra("prune_bg", d.pruneBg),
