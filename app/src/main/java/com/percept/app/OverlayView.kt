@@ -30,6 +30,17 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
     private val shown = HashMap<Int, FloatArray>()
     private val scratch = HashMap<Int, FloatArray>()
 
+    /**
+     * id -> recent measured positions, newest last. Sampled once per CV frame, not per
+     * draw, so the trail covers a real span of time rather than a few display frames.
+     * Every entry is somewhere the point genuinely was.
+     */
+    private val trails = HashMap<Int, ArrayDeque<FloatArray>>()
+    private val trailScratch = HashMap<Int, ArrayDeque<FloatArray>>()
+    private var trailBuf = FloatArray(0)
+    /** Set when a new CV frame lands; the draw loop consumes it to advance the trails. */
+    private var frameIsNew = false
+
     private val pointPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.FILL
@@ -63,6 +74,17 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
     /** 0..1 per display frame. Higher snaps harder to the measurement, lower is smoother. */
     var smoothing = 0.35f
 
+    /** Past positions kept per point; 0 disables trails. */
+    var trailLength = 7
+
+    /** px/frame at which a point reaches full "fast" weight. */
+    var fastSpeed = 3.0f
+
+    private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(70, 255, 255, 255)
+        strokeWidth = 1.2f
+    }
+
     /**
      * Debug layers, cycled by tapping the screen. Isolating one layer at a time is the
      * only way to tell "the detector is wrong" from "the linker is wrong" — with
@@ -94,6 +116,7 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             cvFps = 0.9 * cvFps + 0.1 * (1e9 / (now - lastFrameNanos).coerceAtLeast(1))
         }
         lastFrameNanos = now
+        frameIsNew = true
         // No invalidate here: the draw loop below is already running at display rate.
     }
 
@@ -136,6 +159,41 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
         shown.clear()
         shown.putAll(scratch)
 
+        // Advance trails only when a new measurement arrived, so trail length is a span
+        // of real time rather than of display frames. Rebuilding from the current ids
+        // retires dead points here too.
+        if (frameIsNew && trailLength > 0) {
+            frameIsNew = false
+            trailScratch.clear()
+            for (p in f.points) {
+                val q = trails[p.id] ?: ArrayDeque()
+                q.addLast(floatArrayOf(p.x, p.y))
+                while (q.size > trailLength) q.removeFirst()
+                trailScratch[p.id] = q
+            }
+            trails.clear()
+            trails.putAll(trailScratch)
+        }
+
+        if (trailLength > 0 && (mode == MODE_ALL || mode == MODE_POINTS)) {
+            var need = 0
+            for (q in trails.values) if (q.size > 1) need += (q.size - 1) * 4
+            if (trailBuf.size != need) trailBuf = FloatArray(need)
+            var w = 0
+            for (q in trails.values) {
+                if (q.size < 2) continue
+                var prev: FloatArray? = null
+                for (pt in q) {
+                    if (prev != null) {
+                        trailBuf[w++] = prev[0] * sx; trailBuf[w++] = prev[1] * sy
+                        trailBuf[w++] = pt[0] * sx; trailBuf[w++] = pt[1] * sy
+                    }
+                    prev = pt
+                }
+            }
+            if (w > 0) canvas.drawLines(trailBuf, 0, w, trailPaint)
+        }
+
         // Web rebuilt from the interpolated positions, in one batched drawLines call.
         if (mode == MODE_ALL || mode == MODE_LINES) {
             val need = f.edges.size * 2
@@ -172,7 +230,11 @@ class OverlayView(context: Context, attrs: AttributeSet?) : View(context, attrs)
             val pos = shown[p.id] ?: continue
             val x = pos[0] * sx
             val y = pos[1] * sy
-            canvas.drawCircle(x, y, 2.5f, pointPaint)
+            // Radius carries the real optical-flow magnitude, so fast motion reads
+            // differently from slow without inventing anything: the number is already
+            // measured every frame, it was simply being discarded.
+            val fast = (p.speed / fastSpeed).coerceIn(0f, 1f)
+            canvas.drawCircle(x, y, 2f + 2.2f * fast, pointPaint)
             if (p.speed >= labelSpeed) {
                 canvas.drawText(p.id.toString(), x + 5f, y - 5f, idPaint)
             }

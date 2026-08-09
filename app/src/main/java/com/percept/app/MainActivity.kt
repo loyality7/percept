@@ -37,6 +37,8 @@ class MainActivity : AppCompatActivity() {
         config = TrackerConfig.fromIntent(intent)
         overlayView.labelSpeed = config.labelSpeed.toFloat()
         overlayView.smoothing = config.smoothing.toFloat()
+        overlayView.trailLength = config.trailLength
+        overlayView.fastSpeed = config.fastSpeed.toFloat()
         android.util.Log.i("Percept", "config = $config")
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)

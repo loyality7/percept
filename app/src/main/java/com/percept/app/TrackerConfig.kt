@@ -57,6 +57,15 @@ data class TrackerConfig(
     val smoothing: Double = 0.35,
 
     /**
+     * Past positions kept per tracked point, sampled once per CV frame. 0 disables
+     * trails. These are real measured positions the point already occupied, not a
+     * motion estimate — the persistent IDs are what make them possible at all.
+     */
+    val trailLength: Int = 7,
+    /** px/frame at which a point is drawn at full "fast" weight. */
+    val fastSpeed: Double = 3.0,
+
+    /**
      * Fraction of each re-detect reserved for the moving subject, 0.0..1.0.
      *
      * Shi-Tomasi picks the *most textured* thing, and furniture beats skin every time, so
@@ -96,6 +105,8 @@ data class TrackerConfig(
                 closeKernel = intent.getIntExtra("close_kernel", d.closeKernel),
                 labelSpeed = intent.getFloatExtra("label_speed", d.labelSpeed.toFloat()).toDouble(),
                 smoothing = intent.getFloatExtra("smoothing", d.smoothing.toFloat()).toDouble(),
+                trailLength = intent.getIntExtra("trail_length", d.trailLength),
+                fastSpeed = intent.getFloatExtra("fast_speed", d.fastSpeed.toFloat()).toDouble(),
                 fgBias = intent.getFloatExtra("fg_bias", d.fgBias.toFloat()).toDouble(),
                 learningRate = intent.getFloatExtra("learning_rate", d.learningRate.toFloat()).toDouble(),
                 pruneBg = intent.getIntExtra("prune_bg", d.pruneBg),
