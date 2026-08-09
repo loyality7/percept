@@ -36,6 +36,7 @@ class MainActivity : AppCompatActivity() {
         // without a rebuild. See TrackerConfig.
         config = TrackerConfig.fromIntent(intent)
         overlayView.labelSpeed = config.labelSpeed.toFloat()
+        overlayView.smoothing = config.smoothing.toFloat()
         android.util.Log.i("Percept", "config = $config")
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
@@ -64,12 +65,9 @@ class MainActivity : AppCompatActivity() {
                     val tracker = TrackerAnalyzer(config) { frame, w, h ->
                         overlayView.update(frame, w, h)
                     }
-                    // Tap cycles debug layers. The mask is only rendered in MASK mode, so
-                    // the bitmap conversion is not paid for during normal use.
-                    overlayView.setOnClickListener { _ ->
-                        val mode = overlayView.cycleMode()
-                        tracker.wantMask = mode == OverlayView.MODE_MASK
-                    }
+                    // Tap isolates one layer at a time; all numeric diagnostics go to
+                    // logcat rather than on top of the image.
+                    overlayView.setOnClickListener { overlayView.cycleMode() }
                     it.setAnalyzer(analysisExecutor, tracker)
                 }
 
